@@ -17,6 +17,7 @@
  * limitations under the License.
  */
 --%>
+<<<<<<< HEAD
 <%@ page contentType="text/html;charset=UTF-8"
   import="static org.apache.commons.lang.StringEscapeUtils.escapeXml"
   import="com.google.protobuf.ByteString"
@@ -54,13 +55,84 @@
   import="org.apache.hadoop.hbase.client.RegionReplicaUtil"
   import="org.apache.hadoop.hbase.HBaseConfiguration" %>
 <%
+=======
+<%@page import="org.apache.commons.lang3.StringEscapeUtils"%>
+<%@ page contentType="text/html;charset=UTF-8"
+         import="static org.apache.commons.lang3.StringEscapeUtils.escapeXml"
+         import="org.apache.hadoop.conf.Configuration"
+         import="org.apache.hadoop.hbase.*"
+         import="org.apache.hadoop.hbase.client.*"
+         import="org.apache.hadoop.hbase.master.HMaster"
+         import="org.apache.hadoop.hbase.master.RegionState"
+         import="org.apache.hadoop.hbase.master.assignment.RegionStates"
+         import="org.apache.hadoop.hbase.master.webapp.MetaBrowser"
+         import="org.apache.hadoop.hbase.quotas.QuotaSettingsFactory"
+         import="org.apache.hadoop.hbase.quotas.QuotaTableUtil"
+         import="org.apache.hadoop.hbase.quotas.SpaceQuotaSnapshot"
+         import="org.apache.hadoop.hbase.quotas.ThrottleSettings"
+         import="org.apache.hadoop.hbase.shaded.protobuf.generated.ClusterStatusProtos"
+         import="org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos"
+         import="org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.Quotas"
+         import="org.apache.hadoop.hbase.shaded.protobuf.generated.QuotaProtos.SpaceQuota"
+         import="org.apache.hadoop.hbase.util.Bytes"
+         import="org.apache.hadoop.hbase.util.FSUtils"
+         import="org.apache.hadoop.hbase.zookeeper.MetaTableLocator"%>
+<%@ page import="org.apache.hadoop.util.StringUtils" %>
+<%@ page import="org.apache.hbase.thirdparty.com.google.protobuf.ByteString" %>
+<%@ page import="java.net.URLEncoder" %>
+<%@ page import="java.util.*" %>
+<%@ page import="java.util.concurrent.TimeUnit" %>
+<%@ page import="org.apache.hadoop.hbase.master.webapp.LimitIterator" %>
+<%@ page import="org.apache.hadoop.hbase.master.assignment.RegionStateStore" %>
+<%@ page import="org.apache.hbase.thirdparty.org.apache.commons.collections4.MapUtils" %>
+<%@ page import="org.apache.hadoop.hbase.master.webapp.RegionReplicaInfo" %>
+<%!
+  /**
+   * @return An empty region load stamped with the passed in <code>regionInfo</code>
+   * region name.
+   */
+  private static RegionMetrics getEmptyRegionMetrics(final RegionInfo regionInfo) {
+    return RegionMetricsBuilder.toRegionMetrics(ClusterStatusProtos.RegionLoad.newBuilder().
+            setRegionSpecifier(HBaseProtos.RegionSpecifier.newBuilder().
+                    setType(HBaseProtos.RegionSpecifier.RegionSpecifierType.REGION_NAME).
+                    setValue(ByteString.copyFrom(regionInfo.getRegionName())).build()).build());
+  }
+
+  /**
+   * Given dicey information that may or not be available in meta, render a link to the region on
+   * its region server.
+   * @return an anchor tag if one can be built, {@code null} otherwise.
+   */
+  private static String buildRegionServerLink(final ServerName serverName, final int rsInfoPort,
+    final RegionInfo regionInfo, final RegionState.State regionState) {
+    if (serverName == null || regionInfo == null) { return null; }
+
+    if (regionState != RegionState.State.OPEN) {
+      // region is assigned to RS, but RS knows nothing of it. don't bother with a link.
+      return serverName.getServerName();
+    }
+
+    final String socketAddress = serverName.getHostname() + ":" + rsInfoPort;
+    final String URI = "//" + socketAddress + "/region.jsp"
+      + "?name=" + regionInfo.getEncodedName();
+    return "<a href=\"" + URI + "\">" + serverName.getServerName() + "</a>";
+  }
+%>
+<%
+  final String ZEROMB = "0 MB";
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
   HMaster master = (HMaster)getServletContext().getAttribute(HMaster.MASTER);
   Configuration conf = master.getConfiguration();
   MetaTableLocator metaTableLocator = new MetaTableLocator();
   String fqtn = request.getParameter("name");
+<<<<<<< HEAD
   final String escaped_fqtn = StringEscapeUtils.escapeHtml(fqtn);
   HTable table = null;
   String tableHeader;
+=======
+  final String escaped_fqtn = StringEscapeUtils.escapeHtml4(fqtn);
+  Table table;
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
   boolean withReplica = false;
   ServerName rl = metaTableLocator.getMetaRegionLocation(master.getZooKeeper());
   boolean showFragmentation = conf.getBoolean("hbase.master.ui.fragmentation.enabled", false);
@@ -94,6 +166,19 @@
   }
   int numRegions = 0;
 
+<<<<<<< HEAD
+=======
+  String pageTitle;
+  if ( !readOnly && action != null ) {
+    pageTitle = "HBase Master: " + StringEscapeUtils.escapeHtml4(master.getServerName().toString());
+  } else {
+    pageTitle = "Table: " + escaped_fqtn;
+  }
+  pageContext.setAttribute("pageTitle", pageTitle);
+  AsyncConnection connection = ConnectionFactory.createAsyncConnection(master.getConfiguration()).get();
+  AsyncAdmin admin = connection.getAdminBuilder().setOperationTimeout(5, TimeUnit.SECONDS).build();
+  final MetaBrowser metaBrowser = new MetaBrowser(connection, request);
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
 %>
 <!--[if IE]>
 <!DOCTYPE html>
@@ -348,7 +433,250 @@ if ( fqtn != null ) {
                         compactedKVs / compactingKVs)) + "%";
                     }
                   }
+<<<<<<< HEAD
                 }
+=======
+            %>
+            <tr>
+              <td><%= escapeXml(meta.getRegionNameAsString()) %></td>
+              <td><a href="http://<%= hostAndPort %>/rs-status"><%= StringEscapeUtils.escapeHtml4(hostAndPort) %></a></td>
+              <td><%= String.format("%,1d", compactingCells)%></td>
+              <td><%= String.format("%,1d", compactedCells)%></td>
+              <td><%= String.format("%,1d", compactingCells - compactedCells)%></td>
+              <td><%= compactionProgress%></td>
+            </tr>
+            <%  } %>
+            <%} %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <h2 id="meta-entries">Meta Entries</h2>
+<%
+  if (!metaBrowser.getErrorMessages().isEmpty()) {
+    for (final String errorMessage : metaBrowser.getErrorMessages()) {
+%>
+    <div class="alert alert-warning" role="alert">
+      <%= errorMessage %>
+    </div>
+<%
+    }
+  }
+%>
+    <table class="table table-striped">
+      <tr>
+        <th>RegionName</th>
+        <th>Start Key</th>
+        <th>End Key</th>
+        <th>Replica ID</th>
+        <th>RegionState</th>
+        <th>ServerName</th>
+      </tr>
+<%
+  final LimitIterator<RegionReplicaInfo> results = metaBrowser.limitIterator();
+  byte[] lastRow = null;
+  while (results.hasNext()) {
+    final RegionReplicaInfo regionReplicaInfo = results.next();
+    lastRow = Optional.ofNullable(regionReplicaInfo)
+      .map(RegionReplicaInfo::getRow)
+      .orElse(null);
+    if (regionReplicaInfo == null) {
+%>
+      <tr>
+        <td colspan="6">Null result</td>
+      </tr>
+<%
+      continue;
+    }
+
+    final String regionNameDisplay = Optional.ofNullable(regionReplicaInfo.getRegionName())
+      .map(Bytes::toStringBinary)
+      .orElse("");
+    final String startKeyDisplay = Optional.ofNullable(regionReplicaInfo.getStartKey())
+      .map(Bytes::toStringBinary)
+      .orElse("");
+    final String endKeyDisplay = Optional.ofNullable(regionReplicaInfo.getEndKey())
+      .map(Bytes::toStringBinary)
+      .orElse("");
+    final String replicaIdDisplay = Optional.ofNullable(regionReplicaInfo.getReplicaId())
+      .map(Object::toString)
+      .orElse("");
+    final String regionStateDisplay = Optional.ofNullable(regionReplicaInfo.getRegionState())
+      .map(Object::toString)
+      .orElse("");
+
+    final RegionInfo regionInfo = regionReplicaInfo.getRegionInfo();
+    final ServerName serverName = regionReplicaInfo.getServerName();
+    final RegionState.State regionState = regionReplicaInfo.getRegionState();
+    final int rsPort = master.getRegionServerInfoPort(serverName);
+%>
+      <tr>
+        <td><%= regionNameDisplay %></td>
+        <td><%= startKeyDisplay %></td>
+        <td><%= endKeyDisplay %></td>
+        <td><%= replicaIdDisplay %></td>
+        <td><%= regionStateDisplay %></td>
+        <td><%= buildRegionServerLink(serverName, rsPort, regionInfo, regionState) %></td>
+      </tr>
+<%
+  }
+
+  final boolean metaScanHasMore = results.delegateHasMore();
+%>
+    </table>
+    <div class="row">
+      <div class="col-md-4">
+        <ul class="pagination" style="margin: 20px 0">
+          <li>
+            <a href="<%= metaBrowser.buildFirstPageUrl() %>" aria-label="Previous">
+              <span aria-hidden="true">&#x21E4;</span>
+            </a>
+          </li>
+          <li<%= metaScanHasMore ? "" : " class=\"disabled\"" %>>
+            <a<%= metaScanHasMore ? " href=\"" + metaBrowser.buildNextPageUrl(lastRow) + "\"" : "" %> aria-label="Next">
+              <span aria-hidden="true">&raquo;</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+      <div class="col-md-8">
+        <form action="/table.jsp" method="get" class="form-inline pull-right" style="margin: 20px 0">
+          <input type="hidden" name="name" value="<%= TableName.META_TABLE_NAME %>" />
+          <div class="form-group">
+            <label for="scan-limit">Scan Limit</label>
+            <input type="text" id="scan-limit" name="<%= MetaBrowser.SCAN_LIMIT_PARAM %>"
+              class="form-control" placeholder="<%= MetaBrowser.SCAN_LIMIT_DEFAULT %>"
+              <%= metaBrowser.getScanLimit() != null
+                ? "value=\"" + metaBrowser.getScanLimit() + "\""
+                : ""
+              %>
+              aria-describedby="scan-limit" style="display:inline; width:auto" />
+            <label for="table-name-filter">Table</label>
+            <input type="text" id="table-name-filter" name="<%= MetaBrowser.SCAN_TABLE_PARAM %>"
+              <%= metaBrowser.getScanTable() != null
+                ? "value=\"" + metaBrowser.getScanTable() + "\""
+                : ""
+              %>
+              aria-describedby="scan-filter-table" style="display:inline; width:auto" />
+            <label for="region-state-filter">Region State</label>
+            <select class="form-control" id="region-state-filter" style="display:inline; width:auto"
+              name="<%= MetaBrowser.SCAN_REGION_STATE_PARAM %>">
+              <option></option>
+<%
+  for (final RegionState.State state : RegionState.State.values()) {
+    final boolean selected = metaBrowser.getScanRegionState() == state;
+%>
+              <option<%= selected ? " selected" : "" %>><%= state %></option>
+<%
+  }
+%>
+            </select>
+            <button type="submit" class="btn btn-primary" style="display:inline; width:auto">
+              Filter Results
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <%} else {
+      RegionStates states = master.getAssignmentManager().getRegionStates();
+      Map<RegionState.State, List<RegionInfo>> regionStates = states.getRegionByStateOfTable(table.getName());
+      Map<String, RegionState.State> stateMap = new HashMap<>();
+      for (RegionState.State regionState : regionStates.keySet()) {
+        for (RegionInfo regionInfo : regionStates.get(regionState)) {
+          stateMap.put(regionInfo.getEncodedName(), regionState);
+        }
+      }
+      RegionLocator r = master.getConnection().getRegionLocator(table.getName());
+      try { %>
+    <h2>Table Attributes</h2>
+    <table class="table table-striped">
+      <tr>
+        <th>Attribute Name</th>
+        <th>Value</th>
+        <th>Description</th>
+      </tr>
+      <tr>
+        <td>Enabled</td>
+        <td><%= master.getAssignmentManager().isTableEnabled(table.getName()) %></td>
+        <td>Is the table enabled</td>
+      </tr>
+      <tr>
+        <td>Compaction</td>
+        <td>
+          <%
+            if (master.getAssignmentManager().isTableEnabled(table.getName())) {
+              try {
+                CompactionState compactionState = admin.getCompactionState(table.getName()).get();
+          %><%= compactionState %><%
+        } catch (Exception e) {
+          // Nothing really to do here
+          for(StackTraceElement element : e.getStackTrace()) {
+        %><%= StringEscapeUtils.escapeHtml4(element.toString()) %><%
+          }
+        %> Unknown <%
+          }
+        } else {
+        %><%= CompactionState.NONE %><%
+          }
+        %>
+        </td>
+        <td>Is the table compacting</td>
+      </tr>
+      <%  if (showFragmentation) { %>
+      <tr>
+        <td>Fragmentation</td>
+        <td><%= frags.get(fqtn) != null ? frags.get(fqtn).intValue() + "%" : "n/a" %></td>
+        <td>How fragmented is the table. After a major compaction it is 0%.</td>
+      </tr>
+      <%  } %>
+      <%
+        if (quotasEnabled) {
+          TableName tn = TableName.valueOf(fqtn);
+          SpaceQuotaSnapshot masterSnapshot = null;
+          Quotas quota = QuotaTableUtil.getTableQuota(master.getConnection(), tn);
+          if (quota == null || !quota.hasSpace()) {
+            quota = QuotaTableUtil.getNamespaceQuota(master.getConnection(), tn.getNamespaceAsString());
+            if (quota != null) {
+              masterSnapshot = master.getQuotaObserverChore().getNamespaceQuotaSnapshots()
+                      .get(tn.getNamespaceAsString());
+            }
+          } else {
+            masterSnapshot = master.getQuotaObserverChore().getTableQuotaSnapshots().get(tn);
+          }
+          if (quota != null && quota.hasSpace()) {
+            SpaceQuota spaceQuota = quota.getSpace();
+      %>
+      <tr>
+        <td>Space Quota</td>
+        <td>
+          <table>
+            <tr>
+              <th>Property</th>
+              <th>Value</th>
+            </tr>
+            <tr>
+              <td>Limit</td>
+              <td><%= StringUtils.byteDesc(spaceQuota.getSoftLimit()) %></td>
+            </tr>
+            <tr>
+              <td>Policy</td>
+              <td><%= spaceQuota.getViolationPolicy() %></td>
+            </tr>
+            <%
+              if (masterSnapshot != null) {
+            %>
+            <tr>
+              <td>Usage</td>
+              <td><%= StringUtils.byteDesc(masterSnapshot.getUsage()) %></td>
+            </tr>
+            <tr>
+              <td>State</td>
+              <td><%= masterSnapshot.getQuotaStatus().isInViolation() ? "In Violation" : "In Observance" %></td>
+            </tr>
+            <%
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
               }
         %>
           <tr>
@@ -835,13 +1163,22 @@ Actions:
 </html>
 
 <script>
+<<<<<<< HEAD
 $(document).ready(function() 
     { 
+=======
+$(document).ready(function()
+    {
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
         $("#regionServerTable").tablesorter();
         $("#regionServerDetailsTable").tablesorter();
         $("#tableRegionTable").tablesorter();
         $("#tableCompactStatsTable").tablesorter();
         $("#metaTableCompactStatsTable").tablesorter();
+<<<<<<< HEAD
     } 
+=======
+    }
+>>>>>>> b14f5c5222d... HBASE-23653 Expose content of meta table in web ui
 );
 </script>
