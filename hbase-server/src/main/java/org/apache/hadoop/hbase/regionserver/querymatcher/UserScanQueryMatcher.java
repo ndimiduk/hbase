@@ -27,6 +27,7 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.Filter.ReturnCode;
 import org.apache.hadoop.hbase.io.TimeRange;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost;
 import org.apache.hadoop.hbase.regionserver.ScanInfo;
 import org.apache.hadoop.hbase.util.Pair;
@@ -131,6 +132,9 @@ public abstract class UserScanQueryMatcher extends ScanQueryMatcher {
     }
     // STEP 1: Check if the column is part of the requested columns
     MatchCode matchCode = columns.checkColumn(cell, typeByte);
+    if (ServerCall.isTracing()) {
+      ServerCall.updateCurrentCallMetric("column_hint_" + matchCode.toString().toLowerCase(), 1);
+    }
     if (matchCode != MatchCode.INCLUDE) {
       return matchCode;
     }
@@ -139,6 +143,9 @@ public abstract class UserScanQueryMatcher extends ScanQueryMatcher {
      * INCLUDE, INCLUDE_AND_SEEK_NEXT_COL, or INCLUDE_AND_SEEK_NEXT_ROW.
      */
     matchCode = columns.checkVersions(cell, timestamp, typeByte, false);
+    if (ServerCall.isTracing()) {
+      ServerCall.updateCurrentCallMetric("versions_hint_" + matchCode.toString().toLowerCase(), 1);
+    }
     switch (matchCode) {
       case SKIP:
         return MatchCode.SKIP;
@@ -151,9 +158,15 @@ public abstract class UserScanQueryMatcher extends ScanQueryMatcher {
         break;
     }
 
-    return filter == null
-      ? matchCode
-      : mergeFilterResponse(cell, matchCode, filter.filterCell(cell));
+    if (filter != null) {
+      ReturnCode filterResponse = filter.filterCell(cell);
+      if (ServerCall.isTracing()) {
+        ServerCall.updateCurrentCallMetric("filter_hint_" + filterResponse.toString().toLowerCase(),
+          1);
+      }
+      return mergeFilterResponse(cell, matchCode, filterResponse);
+    }
+    return matchCode;
   }
 
   /**

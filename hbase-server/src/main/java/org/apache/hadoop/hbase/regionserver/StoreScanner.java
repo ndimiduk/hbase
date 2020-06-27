@@ -36,6 +36,7 @@ import org.apache.hadoop.hbase.client.IsolationLevel;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.executor.ExecutorService;
 import org.apache.hadoop.hbase.filter.Filter;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.regionserver.ScannerContext.LimitScope;
 import org.apache.hadoop.hbase.regionserver.ScannerContext.NextState;
 import org.apache.hadoop.hbase.regionserver.handler.ParallelSeekHandler;
@@ -526,6 +527,9 @@ public class StoreScanner extends NonReversedNonLazyKeyValueScanner
     if (checkFlushed()) {
       reopenAfterFlush();
     }
+    if (ServerCall.isTracing()) {
+      ServerCall.updateCurrentCallMetric("seeks", 1);
+    }
     return this.heap.seek(key);
   }
 
@@ -614,6 +618,14 @@ public class StoreScanner extends NonReversedNonLazyKeyValueScanner
         scannerContext.setLastPeekedCell(cell);
         topChanged = false;
         ScanQueryMatcher.MatchCode qcode = matcher.match(cell);
+        if (ServerCall.isTracing()) {
+          ServerCall.updateCurrentCallMetric("sqm_hint_" + qcode.toString().toLowerCase(), 1);
+          ServerCall.updateCurrentCallMetric("cells_matched", 1);
+          ServerCall.updateCurrentCallMetric(
+            "cells_matched__" + this.store.getRegionInfo().getRegionNameAsString() + "__"
+              + this.store.getColumnFamilyName(),
+            1);
+        }
         switch (qcode) {
           case INCLUDE:
           case INCLUDE_AND_SEEK_NEXT_ROW:
@@ -1077,6 +1089,9 @@ public class StoreScanner extends NonReversedNonLazyKeyValueScanner
   public boolean reseek(Cell kv) throws IOException {
     if (checkFlushed()) {
       reopenAfterFlush();
+    }
+    if (ServerCall.isTracing()) {
+      ServerCall.updateCurrentCallMetric("reseeks", 1);
     }
     if (explicitColumnQuery && lazySeekEnabledGlobally) {
       return heap.requestSeek(kv, true, useRowColBloom);

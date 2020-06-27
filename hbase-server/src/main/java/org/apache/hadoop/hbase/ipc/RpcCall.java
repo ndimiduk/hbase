@@ -18,6 +18,7 @@
 package org.apache.hadoop.hbase.ipc;
 
 import java.io.IOException;
+import java.util.Map;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.HBaseInterfaceAudience;
 import org.apache.yetus.audience.InterfaceAudience;
@@ -129,4 +130,10 @@ public interface RpcCall extends RpcCallContext {
    * @return A short string format of this call without possibly lengthy params
    */
   String toShortString();
+
+  Map<String, Long> getCallMetrics();
+
+  void setCallMetric(String name, long value);
+
+  long updateCallMetric(String name, long delta);
 }

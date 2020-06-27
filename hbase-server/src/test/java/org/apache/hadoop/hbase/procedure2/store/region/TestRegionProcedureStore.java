@@ -24,6 +24,7 @@ import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.apache.hadoop.hbase.CellScanner;
@@ -302,6 +303,21 @@ public class TestRegionProcedureStore extends RegionProcedureStoreTestBase {
 
       @Override
       public void incrementResponseExceptionSize(long exceptionSize) {
+      }
+
+      @Override
+      public Map<String, Long> getCallMetrics() {
+        return null;
+      }
+
+      @Override
+      public void setCallMetric(String name, long value) {
+
+      }
+
+      @Override
+      public long updateCallMetric(String name, long delta) {
+        return 0;
       }
     };
   }

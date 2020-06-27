@@ -39,9 +39,11 @@ import org.apache.hadoop.hbase.SizeCachedKeyValue;
 import org.apache.hadoop.hbase.SizeCachedNoTagsByteBufferKeyValue;
 import org.apache.hadoop.hbase.SizeCachedNoTagsKeyValue;
 import org.apache.hadoop.hbase.io.compress.Compression;
+import org.apache.hadoop.hbase.io.crypto.Encryption;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoder;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.io.encoding.HFileBlockDecodingContext;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.nio.ByteBuff;
 import org.apache.hadoop.hbase.regionserver.KeyValueScanner;
 import org.apache.hadoop.hbase.trace.TraceUtil;
@@ -522,85 +524,103 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
      *         block(e.g. using a faked index key)
      */
     protected int blockSeek(Cell key, boolean seekBefore) {
-      int klen, vlen, tlen = 0;
-      int lastKeyValueSize = -1;
-      int offsetFromPos;
-      do {
-        offsetFromPos = 0;
-        // Better to ensure that we use the BB Utils here
-        long ll = blockBuffer.getLongAfterPosition(offsetFromPos);
-        klen = (int) (ll >> Integer.SIZE);
-        vlen = (int) (Bytes.MASK_FOR_LOWER_INT_IN_LONG ^ ll);
-        if (checkKeyLen(klen) || checkLen(vlen)) {
-          throw new IllegalStateException(
-            "Invalid klen " + klen + " or vlen " + vlen + ". Block offset: " + curBlock.getOffset()
-              + ", block length: " + blockBuffer.limit() + ", position: " + blockBuffer.position()
-              + " (without header)." + " path=" + reader.getPath());
-        }
-        offsetFromPos += Bytes.SIZEOF_LONG;
-        this.rowLen = blockBuffer.getShortAfterPosition(offsetFromPos);
-        blockBuffer.asSubByteBuffer(blockBuffer.position() + offsetFromPos, klen, pair);
-        bufBackedKeyOnlyKv.setKey(pair.getFirst(), pair.getSecond(), klen, rowLen);
-        int comp =
-          PrivateCellUtil.compareKeyIgnoresMvcc(reader.getComparator(), key, bufBackedKeyOnlyKv);
-        offsetFromPos += klen + vlen;
-        if (this.reader.getFileContext().isIncludesTags()) {
-          // Read short as unsigned, high byte first
-          tlen = ((blockBuffer.getByteAfterPosition(offsetFromPos) & 0xff) << 8)
-            ^ (blockBuffer.getByteAfterPosition(offsetFromPos + 1) & 0xff);
-          if (checkLen(tlen)) {
-            throw new IllegalStateException("Invalid tlen " + tlen + ". Block offset: "
-              + curBlock.getOffset() + ", block length: " + blockBuffer.limit() + ", position: "
-              + blockBuffer.position() + " (without header)." + " path=" + reader.getPath());
-          }
-          // add the two bytes read for the tags.
-          offsetFromPos += tlen + (Bytes.SIZEOF_SHORT);
-        }
-        if (this.reader.getHFileInfo().shouldIncludeMemStoreTS()) {
-          // Directly read the mvcc based on current position
-          readMvccVersion(offsetFromPos);
-        }
-        if (comp == 0) {
-          if (seekBefore) {
-            if (lastKeyValueSize < 0) {
-              throw new IllegalStateException("blockSeek with seekBefore "
-                + "at the first key of the block: key=" + CellUtil.getCellKeyAsString(key)
-                + ", blockOffset=" + curBlock.getOffset() + ", onDiskSize="
-                + curBlock.getOnDiskSizeWithHeader() + ", path=" + reader.getPath());
-            }
-            blockBuffer.moveBack(lastKeyValueSize);
-            readKeyValueLen();
-            return 1; // non exact match.
-          }
-          currKeyLen = klen;
-          currValueLen = vlen;
-          currTagsLen = tlen;
-          return 0; // indicate exact match
-        } else if (comp < 0) {
-          if (lastKeyValueSize > 0) {
-            blockBuffer.moveBack(lastKeyValueSize);
-          }
-          readKeyValueLen();
-          if (lastKeyValueSize == -1 && blockBuffer.position() == 0) {
-            return HConstants.INDEX_KEY_MAGIC;
-          }
-          return 1;
-        }
-        // The size of this key/value tuple, including key/value length fields.
-        lastKeyValueSize = klen + vlen + currMemstoreTSLen + KEY_VALUE_LEN_SIZE;
-        // include tag length also if tags included with KV
-        if (reader.getFileContext().isIncludesTags()) {
-          lastKeyValueSize += tlen + Bytes.SIZEOF_SHORT;
-        }
-        blockBuffer.skip(lastKeyValueSize);
-      } while (blockBuffer.hasRemaining());
+      long start = 0, end;
+      if (ServerCall.isTracing()) {
+        start = System.nanoTime();
+      }
 
-      // Seek to the last key we successfully read. This will happen if this is
-      // the last key/value pair in the file, in which case the following call
-      // to next() has to return false.
-      blockBuffer.moveBack(lastKeyValueSize);
-      readKeyValueLen();
-      return 1; // didn't exactly find it.
+      try {
+
+        int klen, vlen, tlen = 0;
+        int lastKeyValueSize = -1;
+        int offsetFromPos;
+        do {
+          offsetFromPos = 0;
+          // Better to ensure that we use the BB Utils here
+          long ll = blockBuffer.getLongAfterPosition(offsetFromPos);
+          klen = (int) (ll >> Integer.SIZE);
+          vlen = (int) (Bytes.MASK_FOR_LOWER_INT_IN_LONG ^ ll);
+          if (checkKeyLen(klen) || checkLen(vlen)) {
+            throw new IllegalStateException(
+              "Invalid klen " + klen + " or vlen " + vlen + ". Block offset: "
+                + curBlock.getOffset() + ", block length: " + blockBuffer.limit() + ", position: "
+                + blockBuffer.position() + " (without header)." + " path=" + reader.getPath());
+          }
+          offsetFromPos += Bytes.SIZEOF_LONG;
+          this.rowLen = blockBuffer.getShortAfterPosition(offsetFromPos);
+          blockBuffer.asSubByteBuffer(blockBuffer.position() + offsetFromPos, klen, pair);
+          bufBackedKeyOnlyKv.setKey(pair.getFirst(), pair.getSecond(), klen, rowLen);
+          if (ServerCall.isTracing()) {
+            ServerCall.updateCurrentCallMetric("block_seek_keys", 1);
+          }
+          int comp =
+            PrivateCellUtil.compareKeyIgnoresMvcc(reader.getComparator(), key, bufBackedKeyOnlyKv);
+          offsetFromPos += klen + vlen;
+          if (this.reader.getFileContext().isIncludesTags()) {
+            // Read short as unsigned, high byte first
+            tlen = ((blockBuffer.getByteAfterPosition(offsetFromPos) & 0xff) << 8)
+              ^ (blockBuffer.getByteAfterPosition(offsetFromPos + 1) & 0xff);
+            if (checkLen(tlen)) {
+              throw new IllegalStateException("Invalid tlen " + tlen + ". Block offset: "
+                + curBlock.getOffset() + ", block length: " + blockBuffer.limit() + ", position: "
+                + blockBuffer.position() + " (without header)." + " path=" + reader.getPath());
+            }
+            // add the two bytes read for the tags.
+            offsetFromPos += tlen + (Bytes.SIZEOF_SHORT);
+          }
+          if (this.reader.getHFileInfo().shouldIncludeMemStoreTS()) {
+            // Directly read the mvcc based on current position
+            readMvccVersion(offsetFromPos);
+          }
+          if (comp == 0) {
+            if (seekBefore) {
+              if (lastKeyValueSize < 0) {
+                throw new IllegalStateException("blockSeek with seekBefore "
+                  + "at the first key of the block: key=" + CellUtil.getCellKeyAsString(key)
+                  + ", blockOffset=" + curBlock.getOffset() + ", onDiskSize="
+                  + curBlock.getOnDiskSizeWithHeader() + ", path=" + reader.getPath());
+              }
+              blockBuffer.moveBack(lastKeyValueSize);
+              readKeyValueLen();
+              return 1; // non exact match.
+            }
+            currKeyLen = klen;
+            currValueLen = vlen;
+            currTagsLen = tlen;
+            return 0; // indicate exact match
+          } else if (comp < 0) {
+            if (lastKeyValueSize > 0) {
+              blockBuffer.moveBack(lastKeyValueSize);
+            }
+            readKeyValueLen();
+            if (lastKeyValueSize == -1 && blockBuffer.position() == 0) {
+              return HConstants.INDEX_KEY_MAGIC;
+            }
+            return 1;
+          }
+          // The size of this key/value tuple, including key/value length fields.
+          lastKeyValueSize = klen + vlen + currMemstoreTSLen + KEY_VALUE_LEN_SIZE;
+          // include tag length also if tags included with KV
+          if (reader.getFileContext().isIncludesTags()) {
+            lastKeyValueSize += tlen + Bytes.SIZEOF_SHORT;
+          }
+          blockBuffer.skip(lastKeyValueSize);
+        } while (blockBuffer.hasRemaining());
+
+        // Seek to the last key we successfully read. This will happen if this is
+        // the last key/value pair in the file, in which case the following call
+        // to next() has to return false.
+        blockBuffer.moveBack(lastKeyValueSize);
+        readKeyValueLen();
+        return 1; // didn't exactly find it.
+
+      } finally {
+        if (start > 0) {
+          end = System.nanoTime();
+          ServerCall.updateCurrentCallMetric("block_seeks", 1);
+          ServerCall.updateCurrentCallMetric("block_seek_ns", end - start);
+        }
+      }
     }
 
     @Override
@@ -1089,16 +1109,43 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
   private HFileBlock getCachedBlock(BlockCacheKey cacheKey, boolean cacheBlock, boolean useLock,
     boolean isCompaction, boolean updateCacheMetrics, BlockType expectedBlockType,
     DataBlockEncoding expectedDataBlockEncoding) throws IOException {
+    long start = 0, end;
+    if (ServerCall.isTracing()) {
+      start = System.nanoTime();
+    }
     // Check cache for block. If found return.
     BlockCache cache = cacheConf.getBlockCache().orElse(null);
     if (cache != null) {
       HFileBlock cachedBlock =
         (HFileBlock) cache.getBlock(cacheKey, cacheBlock, useLock, updateCacheMetrics);
       if (cachedBlock != null) {
+        if (start > 0) {
+          end = System.nanoTime();
+          ServerCall.updateCurrentCallMetric("cached_block_read_ns", end - start);
+          ServerCall.updateCurrentCallMetric("cached_block_reads", 1);
+        }
         if (cacheConf.shouldCacheCompressed(cachedBlock.getBlockType().getCategory())) {
           HFileBlock compressedBlock = cachedBlock;
+          if (ServerCall.isTracing()) {
+            start = System.nanoTime();
+          }
           cachedBlock = compressedBlock.unpack(hfileContext, fsBlockReader);
-          // In case of compressed block after unpacking we can release the compressed block
+          if (start > 0) {
+            end = System.nanoTime();
+            ServerCall.updateCurrentCallMetric("cached_block_unpack_ns", end - start);
+            ServerCall.updateCurrentCallMetric("cached_block_unpacks", 1);
+            if (hfileContext.getEncryptionContext() != Encryption.Context.NONE) {
+              ServerCall.updateCurrentCallMetric("block_decrypt_"
+                + hfileContext.getEncryptionContext().getCipher().getName().toLowerCase(), 1);
+            }
+            if (hfileContext.getCompression() != Compression.Algorithm.NONE) {
+              ServerCall.updateCurrentCallMetric(
+                "cached_block_decompress_" + hfileContext.getCompression().getName().toLowerCase(),
+                1);
+            }
+          }
+
+          // In case of compressed block after unpacking we can return the compressed block
           if (compressedBlock != cachedBlock) {
             compressedBlock.release();
           }
@@ -1201,9 +1248,32 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
       }
       // Cache Miss, please load.
 
+      long start = 0, end;
+      if (ServerCall.isTracing()) {
+        start = System.nanoTime();
+      }
       HFileBlock compressedBlock =
         fsBlockReader.readBlockData(metaBlockOffset, blockSize, true, false, true);
+      if (start > 0) {
+        end = System.nanoTime();
+        ServerCall.updateCurrentCallMetric("block_read_ns", end - start);
+        ServerCall.updateCurrentCallMetric("block_reads", 1);
+        start = System.nanoTime();
+      }
       HFileBlock uncompressedBlock = compressedBlock.unpack(hfileContext, fsBlockReader);
+      if (start > 0) {
+        end = System.nanoTime();
+        ServerCall.updateCurrentCallMetric("block_unpack_ns", end - start);
+        ServerCall.updateCurrentCallMetric("block_unpacks", 1);
+        if (hfileContext.getEncryptionContext() != Encryption.Context.NONE) {
+          ServerCall.updateCurrentCallMetric("block_decrypt_"
+            + hfileContext.getEncryptionContext().getCipher().getName().toLowerCase(), 1);
+        }
+        if (hfileContext.getCompression() != Compression.Algorithm.NONE) {
+          ServerCall.updateCurrentCallMetric(
+            "block_decompress_" + hfileContext.getCompression().getName().toLowerCase(), 1);
+        }
+      }
       if (compressedBlock != uncompressedBlock) {
         compressedBlock.release();
       }
@@ -1307,10 +1377,33 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
 
         span.addEvent("blockCacheMiss");
         // Load block from filesystem.
+        long start = 0, end;
+        if (ServerCall.isTracing()) {
+          start = System.nanoTime();
+        }
         HFileBlock hfileBlock = fsBlockReader.readBlockData(dataBlockOffset, onDiskBlockSize, pread,
           !isCompaction, shouldUseHeap(expectedBlockType));
         validateBlockType(hfileBlock, expectedBlockType);
+        if (start > 0) {
+          end = System.nanoTime();
+          ServerCall.updateCurrentCallMetric("block_read_ns", end - start);
+          ServerCall.updateCurrentCallMetric("block_reads", 1);
+          start = System.nanoTime();
+        }
         HFileBlock unpacked = hfileBlock.unpack(hfileContext, fsBlockReader);
+        if (start > 0) {
+          end = System.nanoTime();
+          ServerCall.updateCurrentCallMetric("block_unpack_ns", end - start);
+          ServerCall.updateCurrentCallMetric("block_unpacks", 1);
+          if (hfileContext.getEncryptionContext() != Encryption.Context.NONE) {
+            ServerCall.updateCurrentCallMetric("block_decrypt_"
+              + hfileContext.getEncryptionContext().getCipher().getName().toLowerCase(), 1);
+          }
+          if (hfileContext.getCompression() != Compression.Algorithm.NONE) {
+            ServerCall.updateCurrentCallMetric(
+              "block_decompress_" + hfileContext.getCompression().getName().toLowerCase(), 1);
+          }
+        }
         BlockType.BlockCategory category = hfileBlock.getBlockType().getCategory();
 
         // Cache the block if necessary
@@ -1473,22 +1566,43 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
     @Override
     protected boolean processFirstDataBlock() throws IOException {
       seeker.rewind();
+      if (ServerCall.isTracing()) {
+        ServerCall.updateCurrentCallMetric("seeker_rewind", 1);
+      }
       return true;
     }
 
     @Override
     public boolean next() throws IOException {
-      boolean isValid = seeker.next();
-      if (!isValid) {
-        HFileBlock newBlock = readNextDataBlock();
-        isValid = newBlock != null;
-        if (isValid) {
-          updateCurrentBlock(newBlock);
-        } else {
-          setNonSeekedState();
+      long start = 0, end;
+      if (ServerCall.isTracing()) {
+        start = System.nanoTime();
+      }
+
+      try {
+
+        boolean isValid = seeker.next();
+        if (!isValid) {
+          HFileBlock newBlock = readNextDataBlock();
+          isValid = newBlock != null;
+          if (isValid) {
+            updateCurrentBlock(newBlock);
+          } else {
+            setNonSeekedState();
+          }
+        }
+        return isValid;
+
+      } finally {
+        if (start > 0) {
+          end = System.nanoTime();
+          ServerCall.updateCurrentCallMetric(
+            "seeker_" + getEffectiveDataBlockEncoding().name().toLowerCase() + "_next_ns",
+            end - start);
+          ServerCall.updateCurrentCallMetric(
+            "seeker_" + getEffectiveDataBlockEncoding().name().toLowerCase() + "_next", 1);
         }
       }
-      return isValid;
     }
 
     @Override
@@ -1540,6 +1654,9 @@ public abstract class HFileReaderImpl implements HFile.Reader, Configurable {
         updateCurrentBlock(seekToBlock);
       } else if (rewind) {
         seeker.rewind();
+        if (ServerCall.isTracing()) {
+          ServerCall.updateCurrentCallMetric("seeker_rewind", 1);
+        }
       }
       this.nextIndexedKey = nextIndexedKey;
       return seeker.seekToKeyInBlock(key, seekBefore);

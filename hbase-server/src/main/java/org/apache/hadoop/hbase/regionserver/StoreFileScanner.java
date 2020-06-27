@@ -35,6 +35,7 @@ import org.apache.hadoop.hbase.PrivateCellUtil;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.io.hfile.HFileScanner;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.regionserver.querymatcher.ScanQueryMatcher;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
@@ -186,77 +187,131 @@ public class StoreFileScanner implements KeyValueScanner {
 
   @Override
   public Cell next() throws IOException {
-    Cell retKey = cur;
+    long start = 0, end;
+    if (ServerCall.isTracing()) {
+      start = System.nanoTime();
+    }
 
     try {
-      // only seek if we aren't at the end. cur == null implies 'end'.
-      if (cur != null) {
-        hfs.next();
-        setCurrentCell(hfs.getCell());
-        if (hasMVCCInfo || this.reader.isBulkLoaded()) {
-          skipKVsNewerThanReadpoint();
+
+      Cell retKey = cur;
+
+      try {
+        // only seek if we aren't at the end. cur == null implies 'end'.
+        if (cur != null) {
+          hfs.next();
+          setCurrentCell(hfs.getCell());
+          if (hasMVCCInfo || this.reader.isBulkLoaded()) {
+            skipKVsNewerThanReadpoint();
+          }
         }
+      } catch (FileNotFoundException e) {
+        throw e;
+      } catch (IOException e) {
+        throw new IOException("Could not iterate " + this, e);
       }
-    } catch (FileNotFoundException e) {
-      throw e;
-    } catch (IOException e) {
-      throw new IOException("Could not iterate " + this, e);
+      return retKey;
+
+    } finally {
+      if (start > 0) {
+        end = System.nanoTime();
+        ServerCall.updateCurrentCallMetric("store_next", 1);
+        ServerCall.updateCurrentCallMetric("store_next_" + hfs.getReader().getName(), 1);
+        ServerCall.updateCurrentCallMetric("store_next_ns", end - start);
+        ServerCall.updateCurrentCallMetric("store_next_ns_" + hfs.getReader().getName(),
+          end - start);
+      }
     }
-    return retKey;
   }
 
   @Override
   public boolean seek(Cell key) throws IOException {
-    if (seekCount != null) seekCount.increment();
+    long start = 0, end;
+    if (ServerCall.isTracing()) {
+      start = System.nanoTime();
+    }
 
     try {
+
+      if (seekCount != null) seekCount.increment();
+
       try {
-        if (!seekAtOrAfter(hfs, key)) {
-          this.cur = null;
-          return false;
-        }
+        try {
+          if (!seekAtOrAfter(hfs, key)) {
+            this.cur = null;
+            return false;
+          }
 
-        setCurrentCell(hfs.getCell());
+          setCurrentCell(hfs.getCell());
 
-        if (!hasMVCCInfo && this.reader.isBulkLoaded()) {
-          return skipKVsNewerThanReadpoint();
-        } else {
-          return !hasMVCCInfo ? true : skipKVsNewerThanReadpoint();
+          if (!hasMVCCInfo && this.reader.isBulkLoaded()) {
+            return skipKVsNewerThanReadpoint();
+          } else {
+            return !hasMVCCInfo ? true : skipKVsNewerThanReadpoint();
+          }
+        } finally {
+          realSeekDone = true;
         }
-      } finally {
-        realSeekDone = true;
+      } catch (FileNotFoundException e) {
+        throw e;
+      } catch (IOException ioe) {
+        throw new IOException("Could not seek " + this + " to key " + key, ioe);
       }
-    } catch (FileNotFoundException e) {
-      throw e;
-    } catch (IOException ioe) {
-      throw new IOException("Could not seek " + this + " to key " + key, ioe);
+
+    } finally {
+      if (start > 0) {
+        end = System.nanoTime();
+        ServerCall.updateCurrentCallMetric("store_seek", 1);
+        ServerCall.updateCurrentCallMetric("store_seek_" + hfs.getReader().getName(), 1);
+        ServerCall.updateCurrentCallMetric("store_seek_ns", end - start);
+        ServerCall.updateCurrentCallMetric("store_seek_ns_" + hfs.getReader().getName(),
+          end - start);
+      }
     }
   }
 
   @Override
   public boolean reseek(Cell key) throws IOException {
-    if (seekCount != null) seekCount.increment();
+    long start = 0, end;
+    if (ServerCall.isTracing()) {
+      start = System.nanoTime();
+    }
 
     try {
-      try {
-        if (!reseekAtOrAfter(hfs, key)) {
-          this.cur = null;
-          return false;
-        }
-        setCurrentCell(hfs.getCell());
 
-        if (!hasMVCCInfo && this.reader.isBulkLoaded()) {
-          return skipKVsNewerThanReadpoint();
-        } else {
-          return !hasMVCCInfo ? true : skipKVsNewerThanReadpoint();
+      if (seekCount != null) seekCount.increment();
+
+      try {
+        try {
+          if (!reseekAtOrAfter(hfs, key)) {
+            this.cur = null;
+            return false;
+          }
+          setCurrentCell(hfs.getCell());
+
+          if (!hasMVCCInfo && this.reader.isBulkLoaded()) {
+            return skipKVsNewerThanReadpoint();
+          } else {
+            return !hasMVCCInfo ? true : skipKVsNewerThanReadpoint();
+          }
+        } finally {
+          realSeekDone = true;
         }
-      } finally {
-        realSeekDone = true;
+      } catch (FileNotFoundException e) {
+        throw e;
+      } catch (IOException ioe) {
+        throw new IOException("Could not reseek " + this + " to key " + key, ioe);
       }
-    } catch (FileNotFoundException e) {
-      throw e;
-    } catch (IOException ioe) {
-      throw new IOException("Could not reseek " + this + " to key " + key, ioe);
+
+    } finally {
+      if (start > 0) {
+        end = System.nanoTime();
+        ServerCall.updateCurrentCallMetric("store_reseek", 1);
+        ServerCall.updateCurrentCallMetric("store_reseek_" + hfs.getReader().getName(), 1);
+        ServerCall.updateCurrentCallMetric("store_reseek_ns", end - start);
+        ServerCall.updateCurrentCallMetric("store_reseek_ns_" + hfs.getReader().getName(),
+          end - start);
+      }
     }
   }
 

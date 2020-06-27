@@ -192,6 +192,11 @@ public class CallRunner {
         this.status.markComplete("Call error");
       }
       this.status.pause("Waiting for a call");
+
+      // Call metrics trace
+      if (ServerCall.isTracing()) {
+        ServerCall.logCallTrace(call, successful);
+      }
       cleanup();
       span.end();
     }

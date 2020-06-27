@@ -32,6 +32,7 @@ import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.TagType;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.filter.Filter;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost;
 import org.apache.hadoop.hbase.regionserver.ScanInfo;
 import org.apache.hadoop.hbase.regionserver.ShipperListener;
@@ -204,6 +205,9 @@ public abstract class ScanQueryMatcher implements ShipperListener {
     }
     // MvccSensitiveTracker always need check all cells to save some infos.
     DeleteResult deleteResult = deletes.isDeleted(cell);
+    if (ServerCall.isTracing()) {
+      ServerCall.updateCurrentCallMetric("delete_hint_" + deleteResult.toString().toLowerCase(), 1);
+    }
     switch (deleteResult) {
       case FAMILY_DELETED:
       case COLUMN_DELETED:

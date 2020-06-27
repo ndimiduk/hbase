@@ -40,6 +40,8 @@ import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.io.ByteBuffInputStream;
 import org.apache.hadoop.hbase.io.ByteBufferWriterDataOutputStream;
 import org.apache.hadoop.hbase.io.FSDataInputStreamWrapper;
+import org.apache.hadoop.hbase.io.compress.Compression;
+import org.apache.hadoop.hbase.io.crypto.Encryption;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.io.encoding.EncodingState;
 import org.apache.hadoop.hbase.io.encoding.HFileBlockDecodingContext;
@@ -47,6 +49,7 @@ import org.apache.hadoop.hbase.io.encoding.HFileBlockDefaultDecodingContext;
 import org.apache.hadoop.hbase.io.encoding.HFileBlockDefaultEncodingContext;
 import org.apache.hadoop.hbase.io.encoding.HFileBlockEncodingContext;
 import org.apache.hadoop.hbase.io.util.BlockIOUtils;
+import org.apache.hadoop.hbase.ipc.ServerCall;
 import org.apache.hadoop.hbase.nio.ByteBuff;
 import org.apache.hadoop.hbase.nio.MultiByteBuff;
 import org.apache.hadoop.hbase.nio.SingleByteBuff;
@@ -1399,10 +1402,36 @@ public class HFileBlock implements Cacheable {
           if (offset >= endOffset) {
             return null;
           }
+          long start = 0, end;
+          if (ServerCall.isTracing()) {
+            start = System.nanoTime();
+          }
           HFileBlock b = readBlockData(offset, length, false, false, true);
           offset += b.getOnDiskSizeWithHeader();
           length = b.getNextBlockOnDiskSize();
+          if (start > 0) {
+            end = System.nanoTime();
+            ServerCall.updateCurrentCallMetric("block_read_ns", end - start);
+            ServerCall.updateCurrentCallMetric("block_reads", 1);
+            start = System.nanoTime();
+          }
           HFileBlock uncompressed = b.unpack(fileContext, owner);
+          if (start > 0) {
+            end = System.nanoTime();
+            ServerCall.updateCurrentCallMetric("block_unpack_ns", end - start);
+            ServerCall.updateCurrentCallMetric("block_unpacks", 1);
+            if (b.getHFileContext().getEncryptionContext() != Encryption.Context.NONE) {
+              ServerCall.updateCurrentCallMetric(
+                "block_decrypt_"
+                  + b.getHFileContext().getEncryptionContext().getCipher().getName().toLowerCase(),
+                1);
+            }
+            if (b.getHFileContext().getCompression() != Compression.Algorithm.NONE) {
+              ServerCall.updateCurrentCallMetric(
+                "block_decompress_" + b.getHFileContext().getCompression().getName().toLowerCase(),
+                1);
+            }
+          }
           if (uncompressed != b) {
             b.release(); // Need to release the compressed Block now.
           }

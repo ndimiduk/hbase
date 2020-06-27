@@ -25,9 +25,13 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HBaseServerException;
@@ -42,6 +46,8 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hbase.thirdparty.com.google.protobuf.BlockingService;
 import org.apache.hbase.thirdparty.com.google.protobuf.CodedOutputStream;
@@ -100,6 +106,12 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
   private long exceptionSize = 0;
   private final boolean retryImmediatelySupported;
 
+  // Call metrics, counters for detailed trace of internal actions and decisions
+  // Access is expected to be single threaded. Synchronization is mainly to avoid
+  // concurrent access exceptions if this invariant is violated by mistake; should
+  // always be uncontended.
+  private Map<String, AtomicLong> callCounters = new HashMap<>();
+
   // This is a dirty hack to address HBASE-22539. The highest bit is for rpc ref and cleanup, and
   // the rest of the bits are for WAL reference count. We can only call release if all of them are
   // zero. The reason why we can not use a general reference counting is that, we may call cleanup
@@ -109,6 +121,12 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
   private final AtomicInteger reference = new AtomicInteger(0x80000000);
 
   private final Span span;
+
+  static final Logger LOG = LoggerFactory.getLogger(ServerCall.class);
+
+  public static boolean isTracing() {
+    return LOG.isTraceEnabled();
+  }
 
   @edu.umd.cs.findbugs.annotations.SuppressWarnings(value = "NP_NULL_ON_SOME_PATH",
       justification = "Can't figure why this complaint is happening... see below")
@@ -577,5 +595,84 @@ public abstract class ServerCall<T extends ServerRpcConnection> implements RpcCa
       allowedOnPath = ".*/src/test/.*")
   public synchronized RpcCallback getCallBack() {
     return this.rpcCallback;
+  }
+
+  @Override
+  public void setCallMetric(String name, long value) {
+    AtomicLong counter;
+    synchronized (callCounters) { // Expected to always be the uncontended case
+      counter = callCounters.get(name);
+      if (counter == null) {
+        counter = new AtomicLong();
+        callCounters.put(name, counter);
+      }
+    }
+    counter.set(value);
+  }
+
+  @Override
+  public long updateCallMetric(String name, long delta) {
+    AtomicLong counter;
+    synchronized (callCounters) { // Expected to always be the uncontended case
+      counter = callCounters.get(name);
+      if (counter == null) {
+        counter = new AtomicLong();
+        callCounters.put(name, counter);
+      }
+    }
+    return counter.addAndGet(delta);
+  }
+
+  @Override
+  public Map<String, Long> getCallMetrics() {
+    Map<String, Long> map = new TreeMap<>(); // TreeMap so enumeration will be sorted
+    synchronized (callCounters) { // Expected to always be the uncontended case
+      for (Map.Entry<String, AtomicLong> e : callCounters.entrySet()) {
+        map.put(e.getKey(), e.getValue().longValue());
+      }
+    }
+    return map;
+  }
+
+  public static Map<String, Long> getCurrentCallMetrics() {
+    Optional<RpcCall> call = RpcServer.getCurrentCall();
+    if (call.isPresent()) {
+      return call.get().getCallMetrics();
+    }
+    return new HashMap<>();
+  }
+
+  public static void setCurrentCallMetric(String name, long delta) {
+    Optional<RpcCall> call = RpcServer.getCurrentCall();
+    if (call.isPresent()) {
+      call.get().setCallMetric(name, delta);
+    }
+  }
+
+  public static long updateCurrentCallMetric(String name, long delta) {
+    Optional<RpcCall> call = RpcServer.getCurrentCall();
+    if (call.isPresent()) {
+      return call.get().updateCallMetric(name, delta);
+    }
+    return 0;
+  }
+
+  public static void logCallTrace(RpcCall call, boolean sucessful) {
+    StringBuffer sb = new StringBuffer();
+    sb.append(call.toShortString());
+    sb.append(" successful: ");
+    sb.append(sucessful);
+    Map<String, Long> metrics = call.getCallMetrics();
+    if (!metrics.isEmpty()) {
+      sb.append(" metrics: [");
+      for (Map.Entry<String, Long> e : metrics.entrySet()) {
+        sb.append(" \"");
+        sb.append(e.getKey());
+        sb.append("\": ");
+        sb.append(e.getValue());
+      }
+      sb.append(" ]");
+    }
+    LOG.trace(sb.toString());
   }
 }

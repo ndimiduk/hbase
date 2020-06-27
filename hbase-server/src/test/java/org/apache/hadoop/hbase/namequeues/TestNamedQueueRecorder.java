@@ -24,6 +24,7 @@ import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -622,6 +623,21 @@ public class TestNamedQueueRecorder {
       @Override
       public String toShortString() {
         return null;
+      }
+
+      @Override
+      public Map<String, Long> getCallMetrics() {
+        return null;
+      }
+
+      @Override
+      public void setCallMetric(String name, long value) {
+
+      }
+
+      @Override
+      public long updateCallMetric(String name, long delta) {
+        return 0;
       }
 
       @Override
