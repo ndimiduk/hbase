@@ -31,6 +31,7 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.com.google.common.net.HostAndPort;
+import org.apache.hbase.thirdparty.org.eclipse.jetty.servlet.ServletHolder;
 
 /**
  * Create a Jetty embedded server to answer http requests. The primary goal
@@ -132,6 +133,16 @@ public class InfoServer {
   public void addUnprivilegedServlet(String name, String pathSpec,
           Class<? extends HttpServlet> clazz) {
     this.httpServer.addUnprivilegedServlet(name, pathSpec, clazz);
+  }
+
+  /**
+   * @see HttpServer#addUnprivilegedServlet(String, String, Class)
+   */
+  public void addUnprivilegedServlet(String name, String pathSpec, ServletHolder holder) {
+    if (name != null) {
+      holder.setName(name);
+    }
+    this.httpServer.addUnprivilegedServlet(pathSpec, holder);
   }
 
   /**
