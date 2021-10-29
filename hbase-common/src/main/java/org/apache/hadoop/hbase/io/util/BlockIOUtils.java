@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,12 +18,14 @@
 
 package org.apache.hadoop.hbase.io.util;
 
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.extension.annotations.WithSpan;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
-
 import org.apache.hadoop.fs.ByteBufferReadable;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.hbase.nio.ByteBuff;
@@ -34,10 +36,16 @@ import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.Private
 public final class BlockIOUtils {
-  private static final Logger LOG =
-    LoggerFactory.getLogger(BlockIOUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BlockIOUtils.class);
   // TODO: remove the reflection when we update to Hadoop 3.3 or above.
   private static Method byteBufferPositionedReadMethod;
+
+  private static final AttributeKey<String> READ_TYPE = AttributeKey.stringKey("readType");
+  private enum ReadType {
+    DIRECT,
+    HEAP
+  }
+  private static final AttributeKey<Long> BYTES_READ = AttributeKey.longKey("bytesRead");
 
   static {
     initByteBufferPositionReadableMethod();
@@ -78,15 +86,20 @@ public final class BlockIOUtils {
    * @param length bytes to read.
    * @throws IOException exception to throw if any error happen
    */
+  @WithSpan
   public static void readFully(ByteBuff buf, FSDataInputStream dis, int length) throws IOException {
+    final Span span = Span.current();
     if (!isByteBufferReadable(dis)) {
       // If InputStream does not support the ByteBuffer read, just read to heap and copy bytes to
       // the destination ByteBuff.
+      span.setAttribute(READ_TYPE, ReadType.HEAP.name());
       byte[] heapBuf = new byte[length];
       IOUtils.readFully(dis, heapBuf, 0, length);
       copyToByteBuff(heapBuf, 0, length, buf);
+      span.setAttribute(BYTES_READ, length);
       return;
     }
+    span.setAttribute(READ_TYPE, ReadType.DIRECT.name());
     ByteBuffer[] buffers = buf.nioByteBuffers();
     int remain = length;
     int idx = 0;
@@ -107,6 +120,7 @@ public final class BlockIOUtils {
       }
       remain -= bytesRead;
     }
+    span.setAttribute(BYTES_READ, length);
   }
 
   /**
@@ -117,8 +131,11 @@ public final class BlockIOUtils {
    * @param length to read
    * @throws IOException if any io error encountered.
    */
+  @WithSpan
   public static void readFullyWithHeapBuffer(InputStream in, ByteBuff out, int length)
       throws IOException {
+    final Span span = Span.current();
+    span.setAttribute(READ_TYPE, ReadType.HEAP.name());
     byte[] buffer = new byte[1024];
     if (length < 0) {
       throw new IllegalArgumentException("Length must not be negative: " + length);
@@ -133,6 +150,7 @@ public final class BlockIOUtils {
       out.put(buffer, 0, count);
       remain -= count;
     }
+    span.setAttribute(BYTES_READ, length);
   }
 
   /**
@@ -148,8 +166,11 @@ public final class BlockIOUtils {
    * @return true if succeeded reading the extra bytes
    * @throws IOException if failed to read the necessary bytes
    */
+  @WithSpan
   private static boolean readWithExtraOnHeap(InputStream in, byte[] buf, int bufOffset,
       int necessaryLen, int extraLen) throws IOException {
+    final Span span = Span.current();
+    span.setAttribute(READ_TYPE, ReadType.HEAP.name());
     int bytesRemaining = necessaryLen + extraLen;
     while (bytesRemaining > 0) {
       int ret = in.read(buf, bufOffset, bytesRemaining);
@@ -165,6 +186,7 @@ public final class BlockIOUtils {
       bufOffset += ret;
       bytesRemaining -= ret;
     }
+    span.setAttribute(BYTES_READ, necessaryLen + extraLen - bytesRemaining);
     return bytesRemaining <= 0;
   }
 
@@ -179,16 +201,21 @@ public final class BlockIOUtils {
    *         ByteBuffers, otherwise we've not read the extraLen bytes yet.
    * @throws IOException if failed to read the necessary bytes.
    */
+  @WithSpan
   public static boolean readWithExtra(ByteBuff buf, FSDataInputStream dis, int necessaryLen,
       int extraLen) throws IOException {
+    final Span span = Span.current();
     if (!isByteBufferReadable(dis)) {
       // If InputStream does not support the ByteBuffer read, just read to heap and copy bytes to
       // the destination ByteBuff.
+      span.setAttribute(READ_TYPE, ReadType.HEAP.name());
       byte[] heapBuf = new byte[necessaryLen + extraLen];
       boolean ret = readWithExtraOnHeap(dis, heapBuf, 0, necessaryLen, extraLen);
       copyToByteBuff(heapBuf, 0, heapBuf.length, buf);
+      span.setAttribute(BYTES_READ, heapBuf.length);
       return ret;
     }
+    span.setAttribute(READ_TYPE, ReadType.DIRECT.name());
     ByteBuffer[] buffers = buf.nioByteBuffers();
     int bytesRead = 0;
     int remain = necessaryLen + extraLen;
@@ -211,6 +238,7 @@ public final class BlockIOUtils {
       bytesRead += ret;
       remain -= ret;
     }
+    span.setAttribute(BYTES_READ, bytesRead);
     return (extraLen > 0) && (bytesRead == necessaryLen + extraLen);
   }
 
@@ -232,6 +260,7 @@ public final class BlockIOUtils {
    * @return true if and only if extraLen is > 0 and reading those extra bytes was successful
    * @throws IOException if failed to read the necessary bytes
    */
+  @WithSpan
   public static boolean preadWithExtra(ByteBuff buff, FSDataInputStream dis, long position,
       int necessaryLen, int extraLen) throws IOException {
     boolean preadbytebuffer = dis.hasCapability("in:preadbytebuffer");
@@ -245,6 +274,8 @@ public final class BlockIOUtils {
 
   private static boolean preadWithExtraOnHeap(ByteBuff buff, FSDataInputStream dis, long position,
     int necessaryLen, int extraLen) throws IOException {
+    final Span span = Span.current();
+    span.setAttribute(READ_TYPE, ReadType.HEAP.name());
     int remain = necessaryLen + extraLen;
     byte[] buf = new byte[remain];
     int bytesRead = 0;
@@ -259,11 +290,14 @@ public final class BlockIOUtils {
       remain -= ret;
     }
     copyToByteBuff(buf, 0, bytesRead, buff);
+    span.setAttribute(BYTES_READ, bytesRead);
     return (extraLen > 0) && (bytesRead == necessaryLen + extraLen);
   }
 
   private static boolean preadWithExtraDirectly(ByteBuff buff, FSDataInputStream dis, long position,
     int necessaryLen, int extraLen) throws IOException {
+    final Span span = Span.current();
+    span.setAttribute(READ_TYPE, ReadType.DIRECT.name());
     int remain = necessaryLen + extraLen, bytesRead = 0, idx = 0;
     ByteBuffer[] buffers = buff.nioByteBuffers();
     ByteBuffer cur = buffers[idx];
@@ -298,6 +332,7 @@ public final class BlockIOUtils {
       remain -= ret;
     }
 
+    span.setAttribute(BYTES_READ, bytesRead);
     return (extraLen > 0) && (bytesRead == necessaryLen + extraLen);
   }
 

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,9 @@
 
 package org.apache.hadoop.hbase.io;
 
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.extension.annotations.WithSpan;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,16 +37,15 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sun.nio.ch.DirectBuffer;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
 
 /**
  * ByteBuffAllocator is used for allocating/freeing the ByteBuffers from/to NIO ByteBuffer pool, and
- * it provide high-level interfaces for upstream. when allocating desired memory size, it will
+ * it provides high-level interfaces for upstream. when allocating desired memory size, it will
  * return {@link ByteBuff}, if we are sure that those ByteBuffers have reached the end of life
  * cycle, we must do the {@link ByteBuff#release()} to return back the buffers to the pool,
  * otherwise ByteBuffers leak will happen, and the NIO ByteBuffer pool may be exhausted. there's
- * possible that the desired memory size is large than ByteBufferPool has, we'll downgrade to
+ * possible that the desired memory size is larger than ByteBufferPool has, we'll downgrade to
  * allocate ByteBuffers from heap which meaning the GC pressure may increase again. Of course, an
  * better way is increasing the ByteBufferPool size if we detected this case. <br/>
  * <br/>
@@ -53,8 +55,8 @@ import org.apache.hbase.thirdparty.com.google.common.collect.Sets;
  * free its memory, because it's too wasting to allocate a single fixed-size ByteBuffer for some
  * small objects. <br/>
  * <br/>
- * We recommend to use this class to allocate/free {@link ByteBuff} in the RPC layer or the entire
- * read/write path, because it hide the details of memory management and its APIs are more friendly
+ * We recommend using this class to allocate/free {@link ByteBuff} in the RPC layer or the entire
+ * read/write path, because it hides the details of memory management and its APIs are more friendly
  * to the upper layer.
  */
 @InterfaceAudience.Private
@@ -124,6 +126,18 @@ public class ByteBuffAllocator {
 
   public static final Recycler NONE = () -> {
   };
+
+  private static final AttributeKey<String> ALLOCATION_TYPE =
+    AttributeKey.stringKey("allocationType");
+  private enum AllocationType {
+    DIRECT,
+    HEAP,
+    MIXED
+  }
+  private static final AttributeKey<Long> DIRECT_BYTES_ALLOCATED =
+    AttributeKey.longKey("directBytesAllocated");
+  private static final AttributeKey<Long> HEAP_BYTES_ALLOCATED =
+    AttributeKey.longKey("heapBytesAllocated");
 
   public interface Recycler {
     void free();
@@ -296,14 +310,20 @@ public class ByteBuffAllocator {
    * @param size to allocate
    * @return an ByteBuff with the desired size.
    */
+  @WithSpan
   public ByteBuff allocate(int size) {
+    final Span span = Span.current();
     if (size < 0) {
       throw new IllegalArgumentException("size to allocate should >=0");
     }
     // If disabled the reservoir, just allocate it from on-heap.
     if (!isReservoirEnabled() || size == 0) {
+      span.setAttribute(ALLOCATION_TYPE, AllocationType.HEAP.name());
+      span.setAttribute(HEAP_BYTES_ALLOCATED, size);
       return ByteBuff.wrap(allocateOnHeap(size));
     }
+
+    span.setAttribute(ALLOCATION_TYPE, AllocationType.DIRECT.name());
     int reminder = size % bufSize;
     int len = size / bufSize + (reminder > 0 ? 1 : 0);
     List<ByteBuffer> bbs = new ArrayList<>(len);
@@ -318,10 +338,13 @@ public class ByteBuffAllocator {
       bbs.add(bb);
       remain -= bufSize;
     }
+    span.setAttribute(DIRECT_BYTES_ALLOCATED, size - remain);
     int lenFromReservoir = bbs.size();
     if (remain > 0) {
       // If the last ByteBuffer is too small or the reservoir can not provide more ByteBuffers, we
       // just allocate the ByteBuffer from on-heap.
+      span.setAttribute(ALLOCATION_TYPE, AllocationType.MIXED.name());
+      span.setAttribute(HEAP_BYTES_ALLOCATED, remain);
       bbs.add(allocateOnHeap(remain));
     }
     ByteBuff bb = ByteBuff.wrap(bbs, () -> {

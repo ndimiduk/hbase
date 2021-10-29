@@ -17,6 +17,10 @@
  */
 package org.apache.hadoop.hbase.io.hfile;
 
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.extension.annotations.WithSpan;
 import java.io.IOException;
 
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -33,12 +37,15 @@ class HFileUtil {
    * @throws IOException
    */
   static public void seekOnMultipleSources(FSDataInputStream istream, long offset) throws IOException {
+    final Span span = Span.current();
+    span.addEvent("seek", Attributes.of(AttributeKey.longKey("offset"), offset));
     try {
       // attempt to seek inside of current blockReader
       istream.seek(offset);
     } catch (NullPointerException e) {
       // retry the seek on an alternate copy of the data
       // this can occur if the blockReader on the DFSInputStream is null
+      span.addEvent("seekToNewSource", Attributes.of(AttributeKey.longKey("offset"), offset));
       istream.seekToNewSource(offset);
     }
   }

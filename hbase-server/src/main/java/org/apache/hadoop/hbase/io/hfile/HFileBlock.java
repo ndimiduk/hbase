@@ -18,6 +18,11 @@
 package org.apache.hadoop.hbase.io.hfile;
 
 import static org.apache.hadoop.hbase.io.ByteBuffAllocator.HEAP;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.extension.annotations.WithSpan;
 import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
@@ -28,7 +33,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -58,7 +62,6 @@ import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 
 /**
@@ -631,6 +634,7 @@ public class HFileBlock implements Cacheable {
    * Retrieves the decompressed/decrypted view of this block. An encoded block remains in its
    * encoded structure. Internal structures are shared between instances where applicable.
    */
+  @WithSpan
   HFileBlock unpack(HFileContext fileContext, FSReader reader) throws IOException {
     if (!fileContext.isCompressedOrEncrypted()) {
       // TODO: cannot use our own fileContext here because HFileBlock(ByteBuffer, boolean),
@@ -1496,6 +1500,7 @@ public class HFileBlock implements Cacheable {
      *         include the current block data without the next block header.
      * @throws IOException if any IO error happen.
      */
+    @WithSpan
     protected boolean readAtOffset(FSDataInputStream istream, ByteBuff dest, int size,
         boolean peekIntoNextBlock, long fileOffset, boolean pread) throws IOException {
       if (!pread) {
@@ -1541,68 +1546,73 @@ public class HFileBlock implements Cacheable {
      *      useHeap.
      */
     @Override
+    @WithSpan
     public HFileBlock readBlockData(long offset, long onDiskSizeWithHeaderL, boolean pread,
         boolean updateMetrics, boolean intoHeap) throws IOException {
-      // Get a copy of the current state of whether to validate
-      // hbase checksums or not for this read call. This is not
-      // thread-safe but the one constaint is that if we decide
-      // to skip hbase checksum verification then we are
-      // guaranteed to use hdfs checksum verification.
-      boolean doVerificationThruHBaseChecksum = streamWrapper.shouldUseHBaseChecksum();
-      FSDataInputStream is = streamWrapper.getStream(doVerificationThruHBaseChecksum);
-
-      HFileBlock blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
-        doVerificationThruHBaseChecksum, updateMetrics, intoHeap);
-      if (blk == null) {
-        HFile.LOG.warn("HBase checksum verification failed for file " +
-                       pathName + " at offset " +
-                       offset + " filesize " + fileSize +
-                       ". Retrying read with HDFS checksums turned on...");
-
-        if (!doVerificationThruHBaseChecksum) {
-          String msg = "HBase checksum verification failed for file " +
-                       pathName + " at offset " +
-                       offset + " filesize " + fileSize +
-                       " but this cannot happen because doVerify is " +
-                       doVerificationThruHBaseChecksum;
-          HFile.LOG.warn(msg);
-          throw new IOException(msg); // cannot happen case here
-        }
-        HFile.CHECKSUM_FAILURES.increment(); // update metrics
-
-        // If we have a checksum failure, we fall back into a mode where
-        // the next few reads use HDFS level checksums. We aim to make the
-        // next CHECKSUM_VERIFICATION_NUM_IO_THRESHOLD reads avoid
-        // hbase checksum verification, but since this value is set without
-        // holding any locks, it can so happen that we might actually do
-        // a few more than precisely this number.
-        is = this.streamWrapper.fallbackToFsChecksum(CHECKSUM_VERIFICATION_NUM_IO_THRESHOLD);
-        doVerificationThruHBaseChecksum = false;
-        blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
+      final Context withFileName = Context.current()
+        .with(ContextKey.named("hfilePath"),
+          getBlockDecodingContext().getHFileContext().getHFileName());
+      try (Scope ignored = withFileName.makeCurrent()) {
+        // Get a copy of the current state of whether to validate
+        // hbase checksums or not for this read call. This is not
+        // thread-safe but the one constraint is that if we decide
+        // to skip hbase checksum verification then we are
+        // guaranteed to use hdfs checksum verification.
+        boolean doVerificationThruHBaseChecksum = streamWrapper.shouldUseHBaseChecksum();
+        FSDataInputStream is = streamWrapper.getStream(doVerificationThruHBaseChecksum);
+        HFileBlock blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
           doVerificationThruHBaseChecksum, updateMetrics, intoHeap);
-        if (blk != null) {
-          HFile.LOG.warn("HDFS checksum verification succeeded for file " +
-                         pathName + " at offset " +
-                         offset + " filesize " + fileSize);
-        }
-      }
-      if (blk == null && !doVerificationThruHBaseChecksum) {
-        String msg = "readBlockData failed, possibly due to " +
-                     "checksum verification failed for file " + pathName +
-                     " at offset " + offset + " filesize " + fileSize;
-        HFile.LOG.warn(msg);
-        throw new IOException(msg);
-      }
+        if (blk == null) {
+          HFile.LOG.warn("HBase checksum verification failed for file " +
+            pathName + " at offset " +
+            offset + " filesize " + fileSize +
+            ". Retrying read with HDFS checksums turned on...");
 
-      // If there is a checksum mismatch earlier, then retry with
-      // HBase checksums switched off and use HDFS checksum verification.
-      // This triggers HDFS to detect and fix corrupt replicas. The
-      // next checksumOffCount read requests will use HDFS checksums.
-      // The decrementing of this.checksumOffCount is not thread-safe,
-      // but it is harmless because eventually checksumOffCount will be
-      // a negative number.
-      streamWrapper.checksumOk();
-      return blk;
+          if (!doVerificationThruHBaseChecksum) {
+            String msg = "HBase checksum verification failed for file " +
+              pathName + " at offset " +
+              offset + " filesize " + fileSize +
+              " but this cannot happen because doVerify is " +
+              doVerificationThruHBaseChecksum;
+            HFile.LOG.warn(msg);
+            throw new IOException(msg); // cannot happen case here
+          }
+          HFile.CHECKSUM_FAILURES.increment(); // update metrics
+
+          // If we have a checksum failure, we fall back into a mode where
+          // the next few reads use HDFS level checksums. We aim to make the
+          // next CHECKSUM_VERIFICATION_NUM_IO_THRESHOLD reads avoid
+          // hbase checksum verification, but since this value is set without
+          // holding any locks, it can so happen that we might actually do
+          // a few more than precisely this number.
+          is = this.streamWrapper.fallbackToFsChecksum(CHECKSUM_VERIFICATION_NUM_IO_THRESHOLD);
+          doVerificationThruHBaseChecksum = false;
+          blk = readBlockDataInternal(is, offset, onDiskSizeWithHeaderL, pread,
+            doVerificationThruHBaseChecksum, updateMetrics, intoHeap);
+          if (blk != null) {
+            HFile.LOG.warn("HDFS checksum verification succeeded for file " +
+              pathName + " at offset " +
+              offset + " filesize " + fileSize);
+          }
+        }
+        if (blk == null && !doVerificationThruHBaseChecksum) {
+          String msg = "readBlockData failed, possibly due to " +
+            "checksum verification failed for file " + pathName +
+            " at offset " + offset + " filesize " + fileSize;
+          HFile.LOG.warn(msg);
+          throw new IOException(msg);
+        }
+
+        // If there is a checksum mismatch earlier, then retry with
+        // HBase checksums switched off and use HDFS checksum verification.
+        // This triggers HDFS to detect and fix corrupt replicas. The
+        // next checksumOffCount read requests will use HDFS checksums.
+        // The decrementing of this.checksumOffCount is not thread-safe,
+        // but it is harmless because eventually checksumOffCount will be
+        // a negative number.
+        streamWrapper.checksumOk();
+        return blk;
+      }
     }
 
     /**
@@ -1692,9 +1702,12 @@ public class HFileBlock implements Cacheable {
      * @param intoHeap allocate the ByteBuff of block from heap or off-heap.
      * @return the HFileBlock or null if there is a HBase checksum mismatch
      */
+    @WithSpan
     protected HFileBlock readBlockDataInternal(FSDataInputStream is, long offset,
         long onDiskSizeWithHeaderL, boolean pread, boolean verifyChecksum, boolean updateMetrics,
         boolean intoHeap) throws IOException {
+      final Span span = Span.current();
+      span.setAttribute("useHBaseChecksum", verifyChecksum);
       if (offset < 0) {
         throw new IOException("Invalid offset=" + offset + " trying to read "
             + "block (onDiskSize=" + onDiskSizeWithHeaderL + ")");
@@ -1721,7 +1734,7 @@ public class HFileBlock implements Cacheable {
         // in a LOG every time we seek. See HBASE-17072 for more detail.
         if (headerBuf == null) {
           if (LOG.isTraceEnabled()) {
-            LOG.trace("Extra see to get block size!", new RuntimeException());
+            LOG.trace("Extra seek to get block size!", new RuntimeException());
           }
           headerBuf = HEAP.allocate(hdrSize);
           readAtOffset(is, headerBuf, hdrSize, false, offset, pread);
@@ -1734,7 +1747,7 @@ public class HFileBlock implements Cacheable {
       // onDiskBlock is whole block + header + checksums then extra hdrSize to read next header;
       // onDiskSizeWithHeader is header, body, and any checksums if present. preReadHeaderSize
       // says where to start reading. If we have the header cached, then we don't need to read
-      // it again and we can likely read from last place we left off w/o need to backup and reread
+      // it again, and we can likely read from last place we left off w/o need to back up and reread
       // the header we read last time through here.
       ByteBuff onDiskBlock = this.allocate(onDiskSizeWithHeader + hdrSize, intoHeap);
       boolean initHFileBlockSuccess = false;
