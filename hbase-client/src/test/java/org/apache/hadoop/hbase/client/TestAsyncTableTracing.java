@@ -28,6 +28,7 @@ import static org.apache.hadoop.hbase.trace.hamcrest.SpanDataMatchers.hasStatusW
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
@@ -42,8 +43,10 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.Cell.Type;
@@ -103,7 +106,7 @@ public class TestAsyncTableTracing {
 
   private AsyncConnectionImpl conn;
 
-  private AsyncTable<?> table;
+  private AsyncTable<ScanResultConsumer> table;
 
   @Rule
   public OpenTelemetryRule traceRule = OpenTelemetryRule.create();
@@ -445,6 +448,54 @@ public class TestAsyncTableTracing {
   @Test
   public void testScanAll() {
     table.scanAll(new Scan().setCaching(1).setMaxResultSize(1).setLimit(1)).join();
+    assertTrace("SCAN");
+  }
+
+  @Test
+  public void testScan() throws Throwable {
+    final CountDownLatch doneSignal = new CountDownLatch(1);
+    final AtomicInteger count = new AtomicInteger();
+    final AtomicReference<Throwable> throwable = new AtomicReference<>();
+    final Scan scan = new Scan().setCaching(1).setMaxResultSize(1).setLimit(1);
+    table.scan(scan, new ScanResultConsumer() {
+      @Override public boolean onNext(Result result) {
+        if (result.getRow() != null) {
+          count.incrementAndGet();
+        }
+        return true;
+      }
+
+      @Override public void onError(Throwable error) {
+        throwable.set(error);
+        doneSignal.countDown();
+      }
+
+      @Override public void onComplete() {
+        doneSignal.countDown();
+      }
+    });
+    doneSignal.await();
+    if (throwable.get() != null) {
+      throw throwable.get();
+    }
+    // do something with it.
+    assertThat(count.get(), greaterThanOrEqualTo(0));
+    assertTrace("SCAN");
+  }
+
+  @Test
+  public void testGetScanner() {
+    final Scan scan = new Scan().setCaching(1).setMaxResultSize(1).setLimit(1);
+    try (ResultScanner scanner = table.getScanner(scan)) {
+      int count = 0;
+      for (Result result : scanner) {
+        if (result.getRow() != null) {
+          count++;
+        }
+      }
+      // do something with it.
+      assertThat(count, greaterThanOrEqualTo(0));
+    }
     assertTrace("SCAN");
   }
 

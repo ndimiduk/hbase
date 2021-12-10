@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -28,14 +28,18 @@ import static org.apache.hadoop.hbase.client.ConnectionUtils.isRemote;
 import static org.apache.hadoop.hbase.client.ConnectionUtils.timelineConsistentRead;
 import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
+import io.opentelemetry.api.trace.Span;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.metrics.ScanMetrics;
+import org.apache.hadoop.hbase.client.trace.TableOperationSpanBuilder;
 import org.apache.hadoop.hbase.ipc.HBaseRpcController;
+import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.yetus.audience.InterfaceAudience;
 
 import org.apache.hbase.thirdparty.io.netty.util.Timer;
@@ -214,6 +218,11 @@ class AsyncClientScanner {
   }
 
   public void start() {
-    openScanner();
+    Supplier<Span> spanSupplier = new TableOperationSpanBuilder<>(conn)
+      .setTableName(tableName)
+      .setOperation(scan);
+    TraceUtil.trace(() -> {
+      openScanner();
+    }, spanSupplier);
   }
 }
