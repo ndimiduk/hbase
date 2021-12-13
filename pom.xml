@@ -2656,6 +2656,11 @@
         <version>${hbase-thirdparty.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.apache.hbase.thirdparty</groupId>
+        <artifactId>hbase-noop-htrace</artifactId>
+        <version>${hbase-thirdparty.version}</version>
+      </dependency>
+      <dependency>
         <groupId>com.sun.xml.ws</groupId>
           <artifactId>jaxws-ri</artifactId>
         <version>2.3.2</version>
