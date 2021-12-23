@@ -1725,6 +1725,7 @@
       yyyy-MM-dd'T'HH:mm
     </maven.build.timestamp.format>
     <buildDate>${maven.build.timestamp}</buildDate>
+    <!-- these two control the Java language version and JVM runtime version supported -->
     <compileSource>1.8</compileSource>
     <!-- Build dependencies -->
     <maven.min.version>3.0.4</maven.min.version>
@@ -2728,6 +2729,28 @@
         -->
         <surefire.Xmx>2200m</surefire.Xmx>
       </properties>
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <configuration>
+                <release>8</release>
+                <showWarnings>true</showWarnings>
+                <showDeprecation>false</showDeprecation>
+                <useIncrementalCompilation>false</useIncrementalCompilation>
+                <fork>true</fork><!-- required to enable `compilerArgs` -->
+                <compilerArgs>
+                  <arg>-Xlint:-options</arg>
+                  <!--arg>- -add-exports</arg>
+                  <arg>java.base/sun.jdk=ALL-UNNAMED</arg -->
+                </compilerArgs>
+              </configuration>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
     </profile>
     <!-- profile activated by the Jenkins patch testing job -->
     <profile>
