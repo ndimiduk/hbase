@@ -431,8 +431,8 @@ function git_clone_overwrite {
     log "Clone will be of the gitbox repo for ${PROJECT}."
     if [ -n "${ASF_USERNAME}" ] && [ -n "${ASF_PASSWORD}" ]; then
       # Ugly!
-      encoded_username=$(python -c "import urllib; print urllib.quote('''$ASF_USERNAME''', '')")
-      encoded_password=$(python -c "import urllib; print urllib.quote('''$ASF_PASSWORD''', '')")
+      encoded_username=$(python2 -c "import urllib; print urllib.quote('''$ASF_USERNAME''', '')")
+      encoded_password=$(python2 -c "import urllib; print urllib.quote('''$ASF_PASSWORD''', '')")
       GIT_REPO="https://$encoded_username:$encoded_password@${asf_repo}"
     else
       GIT_REPO="https://${asf_repo}"

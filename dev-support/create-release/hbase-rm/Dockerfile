@@ -19,7 +19,7 @@
 #
 # Includes:
 # * Java 8
-FROM ubuntu:18.04
+FROM ubuntu:22.04
 
 
 # Install extra needed repos and refresh.
@@ -28,20 +28,20 @@ FROM ubuntu:18.04
 # the most current package versions (instead of potentially using old versions cached by docker).
 RUN DEBIAN_FRONTEND=noninteractive apt-get -qq -y update \
   && DEBIAN_FRONTEND=noninteractive apt-get -qq -y install --no-install-recommends \
-    curl='7.58.0-*' \
-    git='1:2.17.1-*' \
-    gnupg='2.2.4-*' \
-    libcurl4-openssl-dev='7.58.0-*' \
-    libxml2-dev='2.9.4+dfsg1-*' \
-    lsof='4.89+dfsg-*' \
+    curl='7.81.0-*' \
+    git='1:2.34.1-*' \
+    gnupg='2.2.27-*' \
+    libcurl4-openssl-dev='7.81.0-*' \
+    libxml2-dev='2.9.13+dfsg-*' \
+    lsof='4.93.2+dfsg-*' \
     openjdk-8-jdk='8u*' \
-    python-pip='9.0.1-*' \
-    subversion='1.9.7-*' \
-    wget='1.19.4-*' \
+    python-pip='20.3.4+dfsg-*' \
+    subversion='1.14.1-*' \
+    wget='1.21.2-*' \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
   && update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java \
-  && pip install \
+  && pip2 install \
     python-dateutil==2.8.1
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

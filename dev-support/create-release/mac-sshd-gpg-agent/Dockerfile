@@ -69,12 +69,12 @@
 # remove the previous host key.
 #
 # Tested with
-# * Docker Desktop 2.2.0.5
-# * gpg 2.2.20
-# * pinentry-mac 0.9.4
+# * Docker Desktop 4.11.1
+# * gpg 2.2.34
+# * pinentry-mac 1.1.1
 # * yubikey 5
 #
-FROM ubuntu:18.04
+FROM ubuntu:22.04
 
 # This is all in a single "RUN" command so that if anything changes, "apt update" is run to fetch
 # the most current package versions (instead of potentially using old versions cached by docker).
@@ -83,8 +83,8 @@ FROM ubuntu:18.04
 # into the container rather than launching a new docker container.
 RUN DEBIAN_FRONTEND=noninteractive apt-get -qq -y update \
   && DEBIAN_FRONTEND=noninteractive apt-get -qq -y install --no-install-recommends \
-    openssh-server=1:7.6p1-* \
-    gnupg2=2.2.4-* \
+    openssh-server=1:8.9p1-* \
+    gnupg2=2.2.27-* \
   && mkdir /run/sshd \
   && echo "StreamLocalBindUnlink yes" >> /etc/ssh/sshd_config \
   && apt-get clean \
